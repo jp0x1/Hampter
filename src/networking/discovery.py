@@ -65,20 +65,10 @@ class DiscoveryService:
     async def start(self):
         loop = asyncio.get_running_loop()
         
-        # Calculate Broadcast Address
-        broadcast_addr = '<broadcast>'
-        try:
-            # Try to get the specific broadcast address for the subnet (e.g. 10.0.0.255)
-            # This is more reliable than 255.255.255.255 in some ad-hoc scenarios
-            if_addrs = netifaces.ifaddresses(cfg.interface)
-            if netifaces.AF_INET in if_addrs:
-                # Get the first ipv4 config
-                ipv4_config = if_addrs[netifaces.AF_INET][0]
-                if 'broadcast' in ipv4_config:
-                    broadcast_addr = ipv4_config['broadcast']
-        except Exception as e:
-            if self.dashboard:
-                self.dashboard.add_debug(f"Broadcast addr calc failed: {e}")
+        # Robustness Fix: Force Global Broadcast
+        # Calculating subnet broadcast proved unreliable (returning unicast IP).
+        # 255.255.255.255 ensures all nodes on the link receive it.
+        broadcast_addr = '255.255.255.255'
 
         if self.dashboard:
             self.dashboard.add_debug(f"UDP Target: {broadcast_addr}")
