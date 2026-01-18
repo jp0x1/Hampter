@@ -7,26 +7,43 @@ import logging
 
 logger = logging.getLogger("FanCtrl")
 
-# Try to import GPIO library
+# Track if we're using mock GPIO
+MOCK_GPIO = False
+
+# Try to import and test GPIO library
 try:
     from gpiozero import PWMOutputDevice
-    MOCK_GPIO = False
-except ImportError:
-    MOCK_GPIO = True
-    logger.warning("GPIOZero not found. Using Mock Fan.")
+    from gpiozero.exc import BadPinFactory
     
-    class PWMOutputDevice:
-        """Mock PWM device for development environments."""
-        def __init__(self, pin: int):
-            self._value = 0.0
+    # Test if we can actually create a device (will fail if no GPIO access)
+    _test = None
+    try:
+        # Don't actually create a device, just check if factory is available
+        from gpiozero import Device
+        Device.ensure_pin_factory()
+    except (BadPinFactory, Exception) as e:
+        logger.warning(f"GPIO not accessible: {e}. Using Mock Fan.")
+        MOCK_GPIO = True
         
-        @property
-        def value(self) -> float:
-            return self._value
-        
-        @value.setter
-        def value(self, val: float):
-            self._value = val
+except ImportError:
+    logger.warning("GPIOZero not found. Using Mock Fan.")
+    MOCK_GPIO = True
+
+
+# Mock class for when GPIO isn't available
+class MockPWMDevice:
+    """Mock PWM device for development environments."""
+    def __init__(self, pin: int):
+        self._value = 0.0
+    
+    @property
+    def value(self) -> float:
+        return self._value
+    
+    @value.setter
+    def value(self, val: float):
+        self._value = val
+
 
 # Try to import psutil for temperature reading
 try:
@@ -56,11 +73,16 @@ class FanController:
     
     def __init__(self, pin: int = 18):
         self.pin = pin
-        self.fan = PWMOutputDevice(pin)
         self.running = False
         self._current_speed = 0.0
         self._manual_override = False
         self._manual_speed = 0.0
+        
+        # Create the appropriate device
+        if MOCK_GPIO:
+            self.fan = MockPWMDevice(pin)
+        else:
+            self.fan = PWMOutputDevice(pin)
 
     async def start_loop(self):
         """Start the automatic fan control loop."""
