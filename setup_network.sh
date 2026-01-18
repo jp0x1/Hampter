@@ -12,24 +12,32 @@ if [ -z "$IFACE" ] || [ -z "$IP_ADDR" ]; then
 fi
 
 echo "[*] Ensuring clean state for $IFACE..."
-# Stop interfering services
-echo "[*] Stopping NetworkManager and wpa_supplicant..."
-systemctl stop NetworkManager
-systemctl stop wpa_supplicant
+
+# Instead of killing NetworkManager (which kills SSH), tell it to ignore THIS device
+if command -v nmcli &> /dev/null; then
+    echo "[*] Setting $IFACE as unmanaged in NetworkManager..."
+    nmcli device set "$IFACE" managed no
+else
+    echo "[!] nmcli not found, skipping specific unmanagement. Warning: wpa_supplicant might interfere."
+fi
+
+# Stop wpa_supplicant JUST for this interface if possible, or kill if it's strictly interfering.
+# But killing wpa_supplicant global might kill SSH too if it's wifi-based.
+# We will rely on 'ip link set down' clearing state mostly.
 
 echo "[*] Bringing down $IFACE..."
 ip link set "$IFACE" down
+ip addr flush dev "$IFACE"
 
 echo "[*] Setting ad-hoc (IBSS) mode on channel $CHANNEL..."
 # Try to set type ibss directly
 if ! iw dev "$IFACE" set type ibss; then
-    echo "[-] Failed to set type IBSS. Attempting to leave managed mode first..."
-    # Some drivers need to leave a mesh/network before switching type
+    echo "[-] Failed to set type IBSS. Attempting manual disconnect..."
     iw dev "$IFACE" disconnect 2>/dev/null
+    iw dev "$IFACE" set type ibss
 fi
 
 echo "[*] Configuring static IP $IP_ADDR..."
-ip addr flush dev "$IFACE"
 ip addr add "$IP_ADDR/24" dev "$IFACE"
 
 echo "[*] Bringing up $IFACE..."
