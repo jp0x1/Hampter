@@ -26,4 +26,11 @@ iptables -L INPUT -n | head -n 5
 echo -e "\n[5] Pinging Target ($TARGET)..."
 ping -c 4 -I "$IFACE" "$TARGET"
 
+echo -e "\n[6] Initializing UDP Listener Check (Port 5566)..."
+# Check if python is listening on 5566
+netstat -uln | grep 5566 || echo "[-] No process listening on UDP 5566!"
+
+echo -e "\n[7] Multicast/Broadcast Route Check:"
+ip route | grep -E "broadcast|multicast"
+
 echo "=============================="
