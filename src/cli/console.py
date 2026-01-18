@@ -16,17 +16,12 @@ from rich.panel import Panel
 from rich.table import Table
 from rich import box
 
-# Global Rich Console
-console = RichConsole()
+# Force width to avoid wrapping issues in standard terminals
+console = RichConsole(width=100)
 
 class SotaConsole:
     """
     State-of-the-Art CLI for Hampter Link.
-    
-    Structure:
-    - Top: Scrolling logs/chat (Rich)
-    - Bottom: Sticky status bar (PromptToolkit)
-    - Prompt: High-performance input (PromptToolkit)
     """
     
     def __init__(self):
@@ -35,15 +30,14 @@ class SotaConsole:
         self._status_provider: Optional[Callable] = None
         self._message_handler: Optional[Callable] = None
         
-        # PromptToolkit Session with styling
+        # PromptToolkit Session
         self.session = PromptSession()
         
-        # Register commands
         self._commands = {
             '/help': self._cmd_help,
             '/status': self._cmd_status,
             '/quit': self._cmd_quit,
-            '/fan': self._pass, # Hooks added later
+            '/fan': self._pass,
             '/link': self._pass,
         }
         self._fan_handler = None
@@ -54,61 +48,44 @@ class SotaConsole:
     def set_fan_handler(self, handler): self._fan_handler = handler
     def set_link_handler(self, handler): self._link_handler = handler
 
-    def _pass(self, args): pass # Placeholder
+    def _pass(self, args): pass
 
     def _get_bottom_toolbar(self):
-        """Generate the status bar text."""
         if not self._status_provider:
-            return HTML(' <b><style bg="red" fg="white"> OFFLINE </style></b> System Initializing...')
+            return HTML(' <b><style bg="red" fg="white"> OFFLINE </style></b>')
         
         stats = self._status_provider()
-        
-        # Format status items
         cpu = f"{stats.get('cpu_percent', 0):.0f}%"
-        temp = f"{stats.get('temp', 0):.1f}°C"
-        rssi = f"{stats.get('rssi', -100)}dBm"
-        batt = f"{stats.get('battery', 0):.0f}%"
-        
-        # Determine colors based on values
-        temp_color = "red" if stats.get('temp', 0) > 75 else "green"
-        rssi_color = "red" if stats.get('rssi', -100) < -80 else "green"
+        temp = f"{stats.get('temp', 0):.1f}C"
+        rssi = f"{stats.get('rssi', -99)}dBm"
         
         return HTML(
-            f' <b><style bg="#444444" fg="#aaaaaa"> CPU </style></b> {cpu} '
-            f'<b><style bg="#444444" fg="#aaaaaa"> TEMP </style></b> <style fg="{temp_color}">{temp}</style> '
-            f'<b><style bg="#444444" fg="#aaaaaa"> WIFI </style></b> <style fg="{rssi_color}">{rssi}</style> '
-            f'<b><style bg="#444444" fg="#aaaaaa"> BATT </style></b> {batt} '
-            f'   <style fg="#666666">Type /help for commands</style>'
+            f' CPU: {cpu} | Temp: {temp} | WiFi: {rssi} | '
+            f'<b>Type /help</b>'
         )
 
     async def run(self):
         self.running = True
         
-        # Print Banner
         console.print(Panel(
             "[bold cyan]HAMPTER LINK v2.0[/bold cyan]\n[dim]Secure. Off-Grid. Connected.[/dim]",
-            border_style="blue",
-            box=box.ROUNDED
+            border_style="blue", box=box.ROUNDED, expand=False
         ))
         
-        # Main Loop
         with patch_stdout():
             while self.running:
                 try:
-                    # The prompt call handles the UI refresh automatically
                     command = await self.session.prompt_async(
-                        HTML('<style fg="#00ffff"><b>[hampter]</b></style> <style fg="#bbbbbb">></style> '),
+                        HTML('<style fg="#00ffff"><b>[link]</b></style> > '),
                         bottom_toolbar=self._get_bottom_toolbar,
-                        refresh_interval=1.0, # Update toolbar every second
+                        refresh_interval=1.0,
                     )
-                    
                     if not command.strip(): continue
                     await self._process_command(command)
-                    
                 except (EOFError, KeyboardInterrupt):
                     self.running = False
                     
-        console.print("[yellow]Shutting down console...[/yellow]")
+        console.print("[yellow]Console stopped.[/yellow]")
 
     async def _process_command(self, text: str):
         text = text.strip()
@@ -117,76 +94,57 @@ class SotaConsole:
             cmd = parts[0].lower()
             args = parts[1:]
             
-            # Dispatch command
             if cmd == '/quit': self.running = False
             elif cmd == '/help': await self._cmd_help(args)
             elif cmd == '/status': await self._cmd_status(args)
             elif cmd == '/fan': await self._cmd_fan_proxy(args)
             elif cmd == '/link': await self._cmd_link_proxy(args)
             else:
-                console.print(f"[red]Unknown command: {cmd}[/red]")
+                console.print(f"[red]Unknown: {cmd}[/red]")
         else:
-            # Chat message
             if self._message_handler:
                 self._message_handler(text)
-                timestamp = datetime.now().strftime("%H:%M")
-                console.print(f"[dim]{timestamp}[/dim] [bold green]Me:[/bold green] {text}")
+                ts = datetime.now().strftime("%H:%M")
+                console.print(f"[green]Me:[/green] {text}")
 
-    # --- Command Handlers ---
-    
     async def _cmd_help(self, args):
-        t = Table(show_header=False, box=None)
-        t.add_column("Cmd", style="bold cyan")
+        t = Table(show_header=False, box=box.SIMPLE, expand=False)
+        t.add_column("Cmd", style="cyan bold")
         t.add_column("Desc")
-        t.add_row("/status", "Show full system telemetry")
-        t.add_row("/send", "Send message (or just type)")
-        t.add_row("/fan", "Set fan speed (0-100 or auto)")
-        t.add_row("/link", "Toggle video link")
-        t.add_row("/quit", "Exit application")
-        console.print(Panel(t, title="Available Commands", border_style="grey50"))
+        t.add_row("/status", "System telemetry")
+        t.add_row("/fan", "Set fan speed")
+        t.add_row("/quit", "Exit")
+        console.print(t)
 
     async def _cmd_status(self, args):
         if not self._status_provider: return
         s = self._status_provider()
         
-        # Create a dashboard grid
-        grid = Table.grid(padding=2)
-        grid.add_column(); grid.add_column(); grid.add_column()
+        t = Table(show_header=False, box=box.ROUNDED)
+        t.add_row(f"[bold]CPU:[/bold] {s.get('cpu_percent')}%", f"[bold]Temp:[/bold] {s.get('temp'):.1f}C")
+        t.add_row(f"[bold]WiFi:[/bold] {s.get('rssi')}dBm", f"[bold]Bat:[/bold] {s.get('battery')}%")
         
-        grid.add_row(
-            f"[b]CPU[/b]: {s.get('cpu_percent')}%",
-            f"[b]RAM[/b]: {s.get('ram_percent')}%",
-            f"[b]SSD[/b]: {s.get('disk_percent', 'N/A')}%"
-        )
-        grid.add_row(
-            f"[b]Temp[/b]: {s.get('temp'):.1f}°C",
-            f"[b]Fan[/b]: {s.get('fan_speed', 'Auto')}",
-            f"[b]Bat[/b]: {s.get('battery')}%"
-        )
-        console.print(Panel(grid, title="System Status", border_style="blue"))
+        console.print(Panel(t, title="Status", border_style="blue", expand=False))
 
     async def _cmd_fan_proxy(self, args):
         if self._fan_handler and args:
             try:
                 val = int(args[0])
                 self._fan_handler(val)
-                console.print(f"[green]Fan set to {val}%[/green]")
+                console.print(f"[green]Fan -> {val}%[/green]")
             except:
                 console.print("[red]Invalid speed[/red]")
-        elif self._fan_handler and not args:
-             # Auto
+        elif self._fan_handler:
              self._fan_handler(-1)
-             console.print("[green]Fan set to Auto[/green]")
+             console.print("[green]Fan -> Auto[/green]")
 
     async def _cmd_link_proxy(self, args):
         if self._link_handler:
             self._link_handler()
-            console.print("[yellow]Toggled Video Link[/yellow]")
 
     async def _cmd_quit(self, args):
-        """Exit command."""
+        # Explicit quit handler for command map
         self.running = False
-
 
     def stop(self):
         self.running = False
