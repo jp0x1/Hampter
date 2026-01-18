@@ -1,122 +1,154 @@
 """
-Hampter Link - Main Entry Point
-Supports GUI and CLI modes.
+Hampter Link Orchestrator.
+Combines Networking, Protocol, and UI.
 """
-import warnings
-warnings.filterwarnings("ignore")
-
-import sys
 import asyncio
-import argparse
 import logging
-import json
-import signal
+import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
-# Configure global logging
-# Show INFO logs to stdout so we can see Fan debug info in the console mix
-logging.basicConfig(
-    level=logging.INFO, 
-    format='%(asctime)s [%(name)s] %(levelname)s: %(message)s'
-)
-logger = logging.getLogger("Main")
-logging.getLogger("asyncio").setLevel(logging.CRITICAL)
+# Core Modules
+from config import cfg
+from src.networking.interface_mgr import InterfaceManager
+from src.networking.discovery import DiscoveryService
+from src.protocol.certificates import CertificateManager
+from src.protocol.quic_server import HampterProtocol, build_quic_config
+from src.protocol.quic_client import QuicClient
+from src.ui.dashboard import Dashboard
 
-shutdown_event = asyncio.Event()
+# Libs
+from prompt_toolkit import PromptSession
+from prompt_toolkit.patch_stdout import patch_stdout
+from aioquic.asyncio import serve
 
-def signal_handler(sig, frame):
-    shutdown_event.set()
+# Logging Setup
+logging.basicConfig(level=logging.INFO)
+# Redirect logging to not mess up UI (ideally)
+# For MVP, we might want to capture logs and feed to UI, but prompt_toolkit handles this
 
-def load_config(path: str = "config.json") -> dict:
-    try:
-        with open(path, "r") as f:
-            return json.load(f)
-    except Exception:
-        return {
-            "node_type": "A",
-            "network": {"interface": "wlan0"},
-            "hardware": {"lcd_address": 0x27, "fan_pin": 2},
-            "security": {}
-        }
-
-async def async_main(args, config):
-    from src.hardware.fan_ctrl import fan_ctrl
-    from src.hardware.telemetry import Telemetry
-    
-    lcd = None
-    if not args.no_lcd:
-        from src.hardware.lcd_drv import LCDDriver
-        lcd = LCDDriver(address=config['hardware'].get('lcd_address', 0x27))
-
-    wifi = None
-    if not args.no_wifi:
-        from src.hardware.wifi_monitor import WifiMonitor
-        wifi = WifiMonitor(interface=config['network'].get('interface', 'wlan0'))
-
-    tasks = []
-    if not args.no_fan:
-        tasks.append(asyncio.create_task(fan_ctrl.start_loop()))
-    if lcd:
-        tasks.append(asyncio.create_task(lcd.start_scroller()))
-
-    if args.mode == 'cli':
-        from src.cli.console import SotaConsole
-        console = SotaConsole()
+class HamperLinkApp:
+    def __init__(self):
+        self.dashboard = Dashboard()
+        self.loop = asyncio.new_event_loop()
+        self.quic_client = None
+        self.peer_info = None
         
-        console.set_status_provider(lambda: {
-            **Telemetry.get_status_dict(),
-            **(wifi.get_stats() if wifi else {})
-        })
+    def start(self):
+        # 1. Interface Selection
+        ifaces = InterfaceManager.scan_interfaces()
+        print("\n[+] Available Interfaces:")
+        for idx, i in enumerate(ifaces):
+            print(f" {idx}. {i['name']} ({i['driver']}) {'[AX210]' if i['is_ax210'] else ''}")
         
-        console.set_fan_handler(lambda s: fan_ctrl.set_manual_speed(s) if s >= 0 else fan_ctrl.set_auto_mode())
+        sel = input("\nSelect Interface ID (default 0): ") or "0"
+        selected_iface = ifaces[int(sel)]
         
-        console_task = asyncio.create_task(console.run())
+        # 2. Network Config
+        ip = input(f"Enter IP for {selected_iface['name']} (e.g. 10.0.0.1): ")
+        channel = input("Enter Channel (default 1): ") or "1"
         
-        await asyncio.wait(
-            [asyncio.create_task(shutdown_event.wait()), console_task],
-            return_when=asyncio.FIRST_COMPLETED
-        )
-        console.stop()
-    else:
-        print("GUI mode requires local display.")
-        return
+        print(f"[+] Configuring {selected_iface['name']}...")
+        if not InterfaceManager.configure_adhoc(selected_iface['name'], ip, int(channel)):
+            print("[-] Configuration Failed. Check sudo?")
+            return
 
-    fan_ctrl.stop()
-    if lcd: lcd.stop()
-    
-    for t in tasks: t.cancel()
-    try:
-        await asyncio.gather(*tasks, return_exceptions=True)
-    except Exception: pass
+        cfg.interface = selected_iface['name']
+        cfg.ip_address = ip
+        self.dashboard.update_info(cfg.interface, cfg.ip_address)
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--cli', action='store_true')
-    parser.add_argument('--mode', choices=['gui','cli'], default='gui')
-    parser.add_argument('--config', default='config.json')
-    parser.add_argument('--no-lcd', action='store_true')
-    parser.add_argument('--no-fan', action='store_true')
-    parser.add_argument('--no-wifi', action='store_true')
-    # Add debug flag to enable verbose logging
-    parser.add_argument('--debug', action='store_true', help="Enable verbose debug logs")
-    args = parser.parse_args()
-
-    if args.cli: args.mode = 'cli'
-    
-    if args.debug:
-        logging.getLogger().setLevel(logging.DEBUG)
-        logging.getLogger("FanCtrl").setLevel(logging.DEBUG)
-
-    config = load_config(args.config)
-    
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-
-    if args.mode == 'gui':
-        print("Use --cli for console.")
-    else:
+        # 3. Certs
+        CertificateManager.ensure_certs()
+        
+        # 4. Asyncio Loop Start
+        asyncio.set_event_loop(self.loop)
         try:
-            asyncio.run(async_main(args, config))
-        except KeyboardInterrupt: pass
+            self.loop.run_until_complete(self.async_main())
+        except KeyboardInterrupt:
+            pass
+        finally:
+            print("Shutting down...")
+
+    async def async_main(self):
+        # Start QUIC Server
+        quic_config = build_quic_config(cfg.CERT_PATH, cfg.KEY_PATH)
+        
+        def on_server_msg(data, peer):
+            self.dashboard.add_log(f"PEER", data)
+        
+        # Hack to inject callback
+        HampterProtocol._on_message_callback = on_server_msg
+
+        server = await serve(
+            "0.0.0.0", cfg.DEFAULT_PORT,
+            configuration=quic_config,
+            create_protocol=HampterProtocol,
+        )
+        
+        # Start Discovery
+        discovery = DiscoveryService(self.on_peer_found)
+        await discovery.start()
+        
+        # Start UI & Input Loop
+        # We run the Live UI layout refresh task
+        ui_task = asyncio.create_task(self.ui_loop())
+        
+        # Input Loop (PromptToolkit)
+        with patch_stdout():
+            session = PromptSession()
+            while True:
+                try:
+                    # Non-blocking prompt (async)
+                    msg = await session.prompt_async(f"[{cfg.get_hostname()}] > ")
+                    if msg.strip():
+                        await self.handle_input(msg)
+                except (EOFError, KeyboardInterrupt):
+                    break
+
+        ui_task.cancel()
+
+    def on_peer_found(self, info, ip):
+        if self.peer_info and self.peer_info['ip'] == ip:
+            return # Already known
+            
+        self.peer_info = info
+        self.peer_info['ip'] = ip
+        self.dashboard.update_peer("FOUND", ip, name=info.get('hostname'))
+        self.dashboard.add_log("SYSTEM", f"Peer found: {ip}")
+        
+        # Initiate QUIC Connection
+        asyncio.create_task(self.connect_quic(ip))
+
+    async def connect_quic(self, ip):
+        client = QuicClient(cfg.CERT_PATH)
+        self.quic_client = client
+        
+        def on_client_msg(data, _):
+            self.dashboard.add_log("PEER", data)
+            
+        self.dashboard.add_log("SYSTEM", f"Connecting to {ip}...")
+        
+        # Connect
+        await client.connect_to(ip, cfg.DEFAULT_PORT, on_client_msg)
+        
+        if client.connected:
+            self.dashboard.update_peer("CONNECTED", ip, name=self.peer_info.get('hostname'))
+            self.dashboard.add_log("SYSTEM", "QUIC Link Established!")
+
+    async def handle_input(self, msg):
+        self.dashboard.add_log("ME", msg)
+        if self.quic_client and self.quic_client.connected:
+            self.quic_client.send_message(msg)
+        else:
+            self.dashboard.add_log("SYSTEM", "Not connected to peer.")
+
+    async def ui_loop(self):
+        """Refreshes the Rich dashboard."""
+        with self.dashboard.get_live() as live:
+            while True:
+                live.update(self.dashboard.generate_layout())
+                await asyncio.sleep(0.1)
 
 if __name__ == "__main__":
-    main()
+    app = HamperLinkApp()
+    app.start()
