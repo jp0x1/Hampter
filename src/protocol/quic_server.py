@@ -23,6 +23,9 @@ class HampterProtocol(QuicConnectionProtocol):
             logger.info("SRV: Handshake Completed")
             if HampterProtocol._on_connect_callback:
                 peer = self._transport.get_extra_info('peername')
+                if not peer:
+                    # Fallback to _quic info
+                    peer = self._quic.remote_address
                 HampterProtocol._on_connect_callback(peer)
                 
         elif isinstance(event, StreamDataReceived):

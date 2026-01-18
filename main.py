@@ -85,12 +85,14 @@ class HamperLinkApp:
         quic_config = build_quic_config(cfg.CERT_PATH, cfg.KEY_PATH)
         
         def on_server_msg(data, peer):
-            self.dashboard.add_log(f"PEER", data)
-            self.dashboard.add_debug(f"SRV: RX Data from {peer}")
+            ip = peer[0] if (peer and len(peer) > 0) else "Peer"
+            self.dashboard.add_log(f"PEER({ip})", data)
+            self.dashboard.add_debug(f"SRV: RX Data from {ip}")
         
         def on_server_connect(peer):
-            self.dashboard.add_debug(f"SRV: New Connection from {peer}")
-            self.dashboard.update_peer("CONNECTED", peer[0])
+            ip = peer[0] if (peer and len(peer) > 0) else "Unknown"
+            self.dashboard.add_debug(f"SRV: New Conn from {ip}")
+            self.dashboard.update_peer("CONNECTED", ip)
         
         # Inject callbacks into Protocol class (Hack for aioquic architecture)
         HampterProtocol._on_message_callback = on_server_msg
