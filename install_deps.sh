@@ -13,7 +13,7 @@ sudo apt install -y \
     gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
     gstreamer1.0-tools gstreamer1.0-alsa \
     libqt5gui5 libqt5core5a qt6-base-dev \
-    iw wireless-tools hostapd \
+    iw hostapd \
     build-essential libssl-dev libffi-dev \
     libgirepository1.0-dev libcairo2-dev pkg-config python3-dev
 
