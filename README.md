@@ -1,5 +1,8 @@
 # Hampter Link MVP Walkthrough
 
+# Hardware For Demo:
+Raspberry Pi with AX210 wifi chip, communication output interface is LCD display using i2c SDA/SCL lines with 2 pull down resistors, and speaker output.
+
 ## Overview
 Phase 1 MVP of the Hampter Link peer-to-peer system. This version establishes an Ad-Hoc/Mesh link using Intel AX210 hardware (or standard Wi-Fi) and creates a secure QUIC tunnel for text communication.
 
